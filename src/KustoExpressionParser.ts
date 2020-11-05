@@ -15,7 +15,7 @@ import {
   QueryEditorArrayExpression,
   QueryEditorPropertyExpression,
 } from './editor/expressions';
-import { cloneDeep } from 'lodash';
+import { cloneDeep, toInteger } from 'lodash';
 
 interface ParseContext {
   timeColumn?: string;
@@ -64,7 +64,8 @@ export class KustoExpressionParser {
     this.appendTimeFilter(context, expression.timeshift, parts);
     this.appendWhere(context, expression?.where, parts, 'where');
     this.appendTimeshift(context, expression.timeshift, parts);
-    this.appendSummarize(context, expression.reduce, expression.groupBy, parts);
+    this.appendSummarize(context, expression.smoothing, expression.reduce, expression.groupBy, parts);
+    this.appendSmoothing(context, expression.smoothing, expression.reduce, expression.groupBy, parts);
     this.appendOrderBy(context, expression.groupBy, expression.reduce, parts);
 
     if (parts.length === 0) {
@@ -72,6 +73,80 @@ export class KustoExpressionParser {
     }
 
     return parts.join('\n| ');
+  }
+
+  private appendSmoothing(
+    context: ParseContext,
+    smoothingExpression: QueryEditorPropertyExpression | undefined,
+    reduceExpression: QueryEditorArrayExpression,
+    groupByExpression: QueryEditorArrayExpression,
+    parts: string[]
+  ) {
+    const smoothing = detectSmoothing(smoothingExpression);
+    const noGroupBy = Array.isArray(groupByExpression.expressions) && groupByExpression.expressions.length === 0;
+    const noReduce = Array.isArray(reduceExpression.expressions) && reduceExpression.expressions.length === 0;
+    const groupByParts: string[] = [];
+
+    if(!smoothing || noReduce || noGroupBy) {
+      return;
+    }
+
+    var reduceFunc = "";
+    var reduceColumn = "";
+    for (const expression of reduceExpression?.expressions ?? []) {
+      if (!isReduceExpression(expression)) {
+        continue;
+      }
+
+      reduceFunc = expression.reduce.name;
+      reduceColumn = context.castIfDynamic(expression.property.name);
+    }
+
+    var groupByInterval = "";
+    for (const expression of groupByExpression?.expressions ?? []) {
+      if (!isGroupBy(expression)) {
+        continue;
+      }
+
+      const column = context.castIfDynamic(expression.property.name);
+
+      if (expression.interval) {
+        groupByInterval = expression.interval.name;
+        continue;
+      }
+
+      groupByParts.push(column);
+    }
+
+    if(smoothing != "median") {
+      if (groupByParts.length > 0) {
+        parts.push(`make-series a=${reduceFunc}(${reduceColumn}) on ${context.timeColumn} from $__timeFrom to $__timeTo step ${groupByInterval} by ${groupByParts.join(', ')}`);
+      }
+      else {
+        parts.push(`make-series a=${reduceFunc}(${reduceColumn}) on ${context.timeColumn} from $__timeFrom to $__timeTo step ${groupByInterval}`);
+      }
+      if(smoothing == "ewma") {
+        parts.push(`extend b=series_exp_smoothing_udf(a, ${translateSmoothingWeight(smoothing, "1")})`);
+      }
+      if(smoothing == "auto") {
+        parts.push(`extend b=series_moving_avg_udf(a, 10, false)`);
+      }
+      parts.push(`mv-expand ${context.timeColumn} to typeof(datetime), b to typeof(real)`);
+      if (groupByParts.length > 0) {
+        parts.push(`project ${context.timeColumn}, b, ${groupByParts.join(', ')}`);
+      }
+      else {
+        parts.push(`project ${context.timeColumn}, b`);
+      }
+    }
+    else {
+      if (groupByParts.length > 0) {
+        parts.push(`evaluate rolling_percentile(${reduceFunc}_${reduceColumn}, 50, ${context.timeColumn}, ${groupByInterval}, ${translateSmoothingWeight(smoothing, "1")}, ${groupByParts.join(', ')})`);
+      }
+      else {
+        parts.push(`evaluate rolling_percentile(${reduceFunc}_${reduceColumn}, 50, ${context.timeColumn}, ${groupByInterval}, ${translateSmoothingWeight(smoothing, "1")})`);
+      }
+    }
   }
 
   private appendTimeshift(
@@ -172,10 +247,16 @@ export class KustoExpressionParser {
 
   private appendSummarize(
     context: ParseContext,
+    smoothingExpr: QueryEditorPropertyExpression | undefined,
     reduce: QueryEditorArrayExpression | undefined,
     groupBy: QueryEditorArrayExpression | undefined,
     parts: string[]
   ) {
+    const smoothing = detectSmoothing(smoothingExpr);
+    if(smoothing && smoothing != "median") {
+      return;
+    }
+
     let countAddedInReduce = false;
     const reduceParts: string[] = [];
     const groupByParts: string[] = [];
@@ -430,3 +511,34 @@ const detectTimeshift = (
   }
   return timeshiftWith;
 };
+
+const detectSmoothing = (
+  smoothing: QueryEditorPropertyExpression | undefined
+): string | null => {
+  if(!smoothing || !smoothing.property) {
+    return null;
+  }
+
+  const smoothingWith = smoothing.property.name;
+
+  return smoothingWith;
+}
+
+const translateSmoothingWeight = (
+  smoothing: string,
+  weight: string,
+): string | null => {
+  const ewmaWeights = ["0.7", "0.5", "0.3", "0.1"];
+  const medianWeights = ["3", "5", "7", "9"];
+
+  if(smoothing == "median")
+  {
+    return medianWeights[toInteger(weight)];
+  }
+  else if (smoothing == "ewma")
+  {
+    return ewmaWeights[toInteger(weight)];
+  }
+
+  return null;
+}

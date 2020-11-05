@@ -22,6 +22,7 @@ import { isFieldExpression } from '../editor/guards';
 import { AdxDataSource } from '../datasource';
 import { AdxSchemaResolver } from '../schema/AdxSchemaResolver';
 import { QueryEditorResultFormat, selectResultFormat } from '../components/QueryEditorResultFormat';
+import { QueryEditorSmoothingWeight, selectSmoothingWeight } from '../components/QueryEditorSmoothingWeight';
 import { TextArea, stylesFactory } from '@grafana/ui';
 import { SelectableValue } from '@grafana/data';
 import { SchemaLoading, SchemaError, SchemaWarning } from '../components/SchemaMessages';
@@ -47,6 +48,8 @@ export const VisualQueryEditor: React.FC<Props> = props => {
   const tableName = getTemplateSrv().replace(table?.property.name ?? '');
   const tableMapping = getSchemaMapper().getMappingByValue(table?.property.name);
   const timeshiftOptions = useTimeshiftOptions();
+  const smoothingOptions = useSmoothingOptions();
+  const smoothingWeight = selectSmoothingWeight(query.smoothingWeight);
 
   const tableSchema = useAsync(async () => {
     if (!table || !table.property) {
@@ -211,6 +214,47 @@ export const VisualQueryEditor: React.FC<Props> = props => {
     [onChangeQuery, query, resultFormat, database, table, parseExpression, tableSchema.value]
   );
 
+  const onChangeSmoothing = useCallback(
+    (expression: QueryEditorExpression) => {
+      if (!isFieldExpression(expression) || !table) {
+        return;
+      }
+
+      const next = {
+        ...defaultQuery.expression,
+        ...query.expression,
+        from: table,
+        smoothing: expression,
+      };
+
+      onChangeQuery({
+        ...query,
+        resultFormat: resultFormat,
+        database: database,
+        expression: next,
+        query: parseExpression(next, tableSchema.value),
+      });
+    },
+    [onChangeQuery, query, resultFormat, database, table, parseExpression, tableSchema.value]
+  );
+
+  const onChangeSmoothingWeight = useCallback(
+    (weight: string) => {
+      const next = {
+        ...query.expression,
+        from: table,
+      };
+
+      onChangeQuery({
+        ...query,
+        expression: next,
+        database: database,
+        smoothingWeight: weight,
+      });
+    },
+    [onChangeQuery, table, database, query]
+  );
+
   if (tableSchema.loading) {
     return (
       <>
@@ -304,6 +348,18 @@ export const VisualQueryEditor: React.FC<Props> = props => {
         onChange={onChangeTimeshift}
         allowCustom={true}
       />
+      <KustoPropertyEditorSection
+        templateVariableOptions={props.templateVariableOptions}
+        label="Smoothing"
+        value={query.expression?.smoothing ?? defaultQuery.expression?.smoothing}
+        fields={smoothingOptions}
+        onChange={onChangeSmoothing}
+      >
+        <QueryEditorSmoothingWeight
+          weight={smoothingWeight}
+          onChangeWeight={onChangeSmoothingWeight}
+        />
+      </KustoPropertyEditorSection>
       <div className={styles.query}>
         <TextArea cols={80} rows={8} value={props.query.query} disabled={true} />
       </div>
@@ -417,6 +473,33 @@ const useTimeshiftOptions = (): QueryEditorPropertyDefinition[] => {
         label: 'Week before',
         value: '7d',
         type: QueryEditorPropertyType.TimeSpan,
+      },
+    ];
+  }, []);
+};
+
+const useSmoothingOptions = (): QueryEditorPropertyDefinition[] => {
+  return useMemo((): QueryEditorPropertyDefinition[] => {
+    return [
+      {
+        label: 'No smoothing',
+        value: '',
+        type: QueryEditorPropertyType.String,
+      },
+      {
+        label: 'Autosmooth',
+        value: 'auto',
+        type: QueryEditorPropertyType.String,
+      },
+      {
+        label: 'EWMA',
+        value: 'ewma',
+        type: QueryEditorPropertyType.String,
+      },
+      {
+        label: 'Median',
+        value: 'median',
+        type: QueryEditorPropertyType.String,
       },
     ];
   }, []);

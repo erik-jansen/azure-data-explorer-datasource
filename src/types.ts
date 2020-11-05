@@ -14,6 +14,7 @@ export interface QueryExpression {
   reduce: QueryEditorArrayExpression;
   groupBy: QueryEditorArrayExpression;
   timeshift?: QueryEditorPropertyExpression;
+  smoothing?: QueryEditorPropertyExpression;
 }
 
 type QuerySource = 'raw' | 'schema' | 'autocomplete' | 'visual';
@@ -26,6 +27,7 @@ export interface KustoQuery extends DataQuery {
   rawMode?: boolean;
   querySource: QuerySource;
   pluginVersion: string;
+  smoothingWeight?: string;
 }
 
 export interface AutoCompleteQuery {
